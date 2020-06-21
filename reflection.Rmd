@@ -1,0 +1,30 @@
+---
+title: "Reflection Section"
+author: "Yash Sinojia [A00268852]"
+date: "15/04/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# PART 3: REFLECTION
+
+## 1.	On Classification Analyses
+
+   The final outcome from the decision trees analysis was 70% accurate approximately which is fairly good for a dataset with numerical variables only. The confusion matrix turns out fairly complicated to predict here as the outcome has 6 different classes and hence a 6x6 matrix to observe.
+   
+   The final outcome from the kNN analysis was 81% with complexity and 72% with simplicity which is decently good. However, we traded for the simpler model according to Occam’s Razor as the differences are not quite large.
+   
+   Henceforth, the ‘Glass Identification’ dataset is destined to be more suited for kNN models as compared to decision trees models due to total numerical nature of the dataset and lack of any categorical variable. Also, the dataset with more than 2 outcomes does not fit really well with decision tree model. On the other hand, kNN was specially designed to handle such dataset.
+   
+  After all, the 10x cross validation has its essence towards improvements in both the analyses. Also, there were only 214 instances in our dataset, which is fairly small, so it has been subjected to different experimental splits within training and testing data.
+  
+## 2. On Regression Analyses
+
+   Here, a simple linear regression analyses were essential in prior to understand the nature of the dataset when exposed to a regression model. The characteristics of each variable with the target variable was studied by simple ‘lm’ plots and their descriptive test results.
+   
+   The dataset has around 400 instances, which is moderately small and there are 3 categorical and 6 numerical variables in the dataset. The outcome ‘mpg’ has continuous values ranging from 9 to 47 and hence this dataset is suitable for a regression analyses rather than a classification or clustering one.
+   
+   In a regression analyses it can not be truly answered that which particular model is best because here a model that includes all the source variables has to be considered anyhow and it is highly probable that this particular model would yield the highest accuracy on prediction, because there arises a need to delve deeper into feature selection and extraction from the data. But anyhow, the final model presented proves out to be fairly efficient in conveying the message to the audience. The message is that now we do understand how the linear regression model works but that is not the end of our quest. There are more sub-questions to find and more research to answer those.

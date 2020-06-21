@@ -1,0 +1,855 @@
+---
+title: "Project Markdown"
+author: "Yash Sinojia [A00268852]"
+date: "14/04/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# PART 1: CLASSIFICATION
+
+## Loading data manipulation and visualization libraries
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(corrplot)
+library(ggplot2)
+library(MASS)
+library(Boruta)
+library(gridExtra)
+library(DataExplorer)
+
+```
+
+## Data Description
+
+1. Title: Glass Identification
+
+2. Abstract: From USA Forensic Science Service; 6 types of glass; defined in terms of their oxide content    (i.e. Na, Fe, K, etc).
+   
+   The study of classification of types of glass was motivated by criminological investigation. At the      scene of the crime, the glass left can be used as evidence...if it is correctly identified!
+
+3. Source
+
+   Creator:
+   B. German
+   Central Research Establishment
+   Home Office Forensic Science Service
+   Aldermaston, Reading, Berkshire RG7 4PN
+
+   Donor:
+   Vina Spiehler, Ph.D., DABFT
+   Diagnostic Products Corporation
+   (213) 776-0180 (ext 3014)
+
+4. Attribute Information:
+
+   1. Id number: 1 to 214
+   2. RI: refractive index
+   3. Na: Sodium (unit measurement: weight percent in corresponding oxide, as are attributes 4-10)
+   4. Mg: Magnesium
+   5. Al: Aluminum
+   6. Si: Silicon
+   7. K: Potassium
+   8. Ca: Calcium
+   9. Ba: Barium
+   10. Fe: Iron
+   11. Type of glass: (class attribute)
+   
+   -- 1 building_windows_float_processed
+   
+   -- 2 building_windows_non_float_processed
+   
+   -- 3 vehicle_windows_float_processed
+   
+   -- 4 vehicle_windows_non_float_processed (none in this database)
+   
+   -- 5 containers
+   
+   -- 6 tableware
+   
+   -- 7 headlamps
+
+5. Number of Attributes:   10
+
+6. Number of Instances:    214
+
+```{r}
+glass_data <- read.csv("glass.csv")
+glass_data$Type <- as.factor(glass_data$Type)
+colnames(glass_data)[1] <- "Refractive.index"
+dim(glass_data)
+summary(glass_data)
+head(glass_data, 2)
+```
+
+## Cleaning Data
+
+```{r}
+plot_missing(glass_data)
+```
+
+No missing values found.
+
+```{r}
+anyDuplicated(glass_data)
+glass_data <- glass_data[!duplicated(glass_data),]
+```
+
+40 duplicated values eliminated.
+
+```{r}
+plot_bar(glass_data)
+```
+
+Bar plot on occurances of each glass type.
+
+```{r}
+plot_histogram(glass_data)
+```
+
+Ocurrances of all other variables.
+
+### Finding pearson correlation among all variables except the target with Refractive Index
+
+```{r}
+glass_data_not_type <- glass_data[, which(!(names(glass_data) %in% 'Type'))]
+corrplot(cor(glass_data_not_type))
+```
+
+Element 'Ca' is highly directly proportional to refractive index. While 'Ba' and 'Si' have inversly proportinal correlation.
+
+```{r}
+boxplot(glass_data$Refractive.index ~ glass_data$Type)
+```
+
+### Aggregating frequencies of all elements from data
+
+```{r}
+elements_data <- glass_data[c(2:9)]
+element_freq <- apply(elements_data!=0, 2, sum)
+element_freq
+```
+
+### Plotting frequencies with a barplot
+
+```{r}
+barplot(element_freq)
+abline(h=nrow(glass_data), lty=2, col=2)
+```
+
+It can be noted that the occurances of 'Ba' and 'Fe' are comparitively lower than of all other elements in the data.
+
+### Table to describe frequencies of each element within each Type of glass
+
+```{r}
+(glass_data[, which(!(names(glass_data) %in% c('Refractive.index', 'Type')))] > 0) %>% 
+  as.data.frame() %>% 
+  cbind(Type=glass_data$Type) %>% 
+  group_by(Type) %>% 
+  summarise(Na=sum(Na), Mg=sum(Mg), Al=sum(Al), Si=sum(Si), K=sum(K), Ca=sum(Ca), Ba=sum(Ba), Fe=sum(Fe))
+```
+
+# Decision Trees
+
+```{r}
+library(rpart) # Recursive Partitioning and Regression Tress R library for Classification (CART) Algorithm
+library(caret) # Easy Machine Learning Workflow
+library(e1071) # Additional for model building
+library(maptree) # Decision tree graphics
+```
+
+## Splitting dataset into 70% training data and remaining 30% testing data
+
+```{r}
+set.seed(123)
+training.samples <- glass_data$Type %>%
+                    createDataPartition(p = 0.7, list = FALSE)
+glass_data_train <- glass_data[training.samples,]
+glass_data_test <- glass_data[-training.samples,]
+```
+
+## Model1: Basic Decision Tree
+
+```{r}
+model1 <- rpart(Type ~., data = glass_data_train, method = "class")
+
+draw.tree(model1, cex = 1.05)
+```
+
+This model is built upon basic classification tress on train data and default class method.
+
+```{r}
+predicted.classes <- model1 %>%
+                     predict(glass_data_test, type = "class")
+head(predicted.classes)
+```
+
+```{r}
+mean(predicted.classes == glass_data_test$Type)
+```
+
+The model results into a moderately complex tree with 55% accuracy which seems fairly low.
+
+```{r}
+confusionMatrix(predicted.classes, glass_data_test$Type)
+```
+
+Studying the output from the confusion matrix, it can be elaborated that:
+
+1. 'Type' 5 and 7 have higher sensitivity, i.e. this model is better at identifying true positives and false positives, while it fails for all other 'Type's.
+
+2. Specificity of each and every 'Type' is higher than 71% which proves the model is quite efficient at identifying true negatives and false negatives.
+
+3. The overall balanced accuracy is quite low for 'Type' 3 and 6 and quite high for 'Type' 5 and 7.
+
+## Model2: Pruning Decision Tree with caret, setting 10x cross validation with 50 complexity parameter values
+
+```{r}
+set.seed(753951)
+model2 <- train(Type ~., data = glass_data_train, method = "rpart",
+                trControl = trainControl("cv", number = 10),
+                tuneLength = 50
+)
+plot(model2)
+```
+
+This model uses rpart method which is a partitioning algorithm for classification trees in R. 10x cross validation is applied with 50 tune points as cp values.
+
+### Picking an optimum cp value
+
+```{r}
+model2$bestTune
+```
+
+Selecting the best tune which corresponds to the cp value that results in highest accuracy.
+
+```{r}
+draw.tree(model2$finalModel, cex = 1.05)
+```
+
+The best tune cp value is quite small which ultimately results into a complex tree.
+
+```{r}
+model2$finalModel
+```
+
+```{r}
+pred.classes <- model2 %>% 
+                predict(glass_data_test)
+```
+
+```{r}
+mean(pred.classes == glass_data_test$Type)
+```
+
+The prediction has not been improved at all with this model, which addresses other issues.
+
+```{r}
+confusionMatrix(pred.classes, glass_data_test$Type)
+```
+
+The confusion matrix describes almost similar results as previous. Some changes in dataset expected for any improvement.
+
+## Changing the splitting ratio to 60/40 for better accuracy
+
+```{r}
+set.seed(951357)
+training.samples <- glass_data$Type %>%
+  createDataPartition(p = 0.6, list = FALSE)
+glass_data_train <- glass_data[training.samples,]
+glass_data_test <- glass_data[-training.samples,]
+```
+
+## Model2b: Running back Model2 with new samples
+
+```{r}
+set.seed(654852)
+model2b <- train(Type ~., data = glass_data_train, method = "rpart",
+                trControl = trainControl("cv", number = 10),
+                tuneLength = 50
+)
+plot(model2b)
+```
+
+This model seems to have more sufficient test data for fit analysis which had been lacking in all the previous models. There is a rising attempt to attend the expected optimum maxima on accuracy.
+
+```{r}
+model2b$bestTune
+```
+
+The cp value is higher than the previous model which supposedly prunes the complex tree into a simpler model. 
+
+```{r}
+draw.tree(model2b$finalModel, cex = 1.05)
+```
+
+As expected, the complexity of the model has been reduced.
+
+```{r}
+model2b$finalModel
+```
+
+```{r}
+pred.classes <- model2b %>% 
+                predict(glass_data_test)
+```
+
+```{r}
+mean(pred.classes == glass_data_test$Type)
+```
+
+The resultant accuracy in this model has been enhanced.
+
+```{r}
+confusionMatrix(pred.classes, glass_data_test$Type)
+```
+
+The confusion matrix describes the required improvement in predicting true and false positives for all 'Type's except 'Type' 3 and 6.
+
+The balanced accuracy has been improved, on an average, in terms of overall classification.
+
+
+# k Nearest Neighbours
+
+```{r}
+library(class) # Functions for kNN classification
+```
+
+## k=1
+
+```{r}
+glass_type <- glass_data_train$Type
+knn1 <- knn(glass_data_train[-10], glass_data_test[-10], cl = glass_type)
+```
+
+To classify the data with relation to first nearest neighbour for each data point according to Euclidean distance. Here, the target is 'Type' and sources are all other variables.
+
+```{r}
+mean(knn1 == glass_data_test$Type)
+```
+
+The accuracy is moderately good.
+
+```{r}
+confusionMatrix(knn1, glass_data_test$Type)
+```
+
+Noting the confusion matrix:
+
+1. On an average, the sensitivity is fair which has scope for further improvements. The specificity is high enough.
+
+2. The overall balanced accuracy is very low in predicting 'Type' 3 contrary to all the other 'Type's.
+
+### Splitting the dataset into 70/30 ratio for better accuracy in prediction
+
+```{r}
+set.seed(1234)
+ind<-sample(2,nrow(glass_data),prob=c(0.7,0.3),replace=TRUE)
+glass_data_train<-glass_data[ind==1,]
+glass_data_test<-glass_data[ind==2,]
+```
+
+Changed the data split to 70/30 to seek improvements in prediction.
+
+### Applying on same knn model
+
+```{r}
+glass_type <- glass_data_train$Type
+knn1 <- knn(glass_data_train[-10], glass_data_test[-10], cl = glass_type)
+```
+
+```{r}
+mean(knn1 == glass_data_test$Type)
+```
+
+The accuracy has now improved drastically.
+
+```{r}
+confusionMatrix(knn1, glass_data_test$Type)
+```
+
+Similar sensitivity and improved Specificity and thus higher balanced accuracies.
+
+## k=10
+
+```{r}
+knn10 <- knn(glass_data_train[-10], glass_data_test[-10], cl = glass_type, k = 10)
+```
+
+To identify a data point's 'Type' with respect to the 10 nearest neighbour data points according to Euclidean distance. 
+
+```{r}
+mean(knn10 == glass_data_test$Type)
+```
+
+There has been a reduction in accuracy.
+
+```{r}
+confusionMatrix(knn10, glass_data_test$Type)
+```
+
+The confusion matrix addresses several lack in sensitivity, i.e. in predicting true positive and false positive values.
+
+### Applying 10x Cross Validation to find the optimum k
+
+```{r}
+mycontrol<-trainControl(method="cv",number=10)
+model_knn <- train(Type ~., data=glass_data_train, method="knn", metric="Accuracy", trControl=mycontrol)
+model_knn
+```
+
+The model describes k=7 as most accurate.
+
+## k=7
+
+```{r}
+knn7 <- knn(glass_data_train[-10], glass_data_test[-10], cl = glass_type, k = 7)
+```
+
+```{r}
+mean(knn7 == glass_data_test$Type)
+```
+
+The accuracy is fair but still lower than k=1.
+
+```{r}
+confusionMatrix(knn7, glass_data_test$Type)
+```
+
+The confusion matrix describes the model to be fairly accurate but simpler in complexiety than k=1. So this model works the best.
+
+# PART 2: REGRESSION
+
+### Additional library for regression plots
+
+```{r}
+library(visreg)
+```
+
+## Data Description
+
+1. Title: Auto-Mpg Data
+
+2. Sources:
+   (a) Origin:  This dataset was taken from the StatLib library which is
+                maintained at Carnegie Mellon University. The dataset was 
+                used in the 1983 American Statistical Association Exposition.
+   (c) Date: July 7, 1993
+
+3. Relevant Information:
+
+   This dataset is a slightly modified version of the dataset provided in
+   the StatLib library.  In line with the use by Ross Quinlan (1993) in
+   predicting the attribute "mpg", 8 of the original instances were removed 
+   because they had unknown values for the "mpg" attribute.  The original 
+   dataset is available in the file "auto-mpg.data-original".
+
+   "The data concerns city-cycle fuel consumption in miles per gallon,
+    to be predicted in terms of 3 multivalued discrete and 5 continuous
+    attributes." (Quinlan, 1993)
+
+4. Number of Instances: 398
+
+5. Number of Attributes: 9 including the class attribute
+
+6. Attribute Information:
+
+    1. mpg:           continuous
+    2. cylinders:     multi-valued discrete
+    3. displacement:  continuous
+    4. horsepower:    continuous
+    5. weight:        continuous
+    6. acceleration:  continuous
+    7. model year:    multi-valued discrete
+    8. origin:        multi-valued discrete
+    9. car name:      string (unique for each instance)
+
+## Importing Data
+
+```{r}
+
+auto_mpg_data <- read.csv("auto-mpg.csv")
+colnames(auto_mpg_data) <- c("mpg","cylinders","displacement","horsepower","weight","acceleration","model_year", "origin","car_name")
+
+dim(auto_mpg_data)
+summary(auto_mpg_data)
+head(auto_mpg_data, 2)
+
+```
+
+## Cleaning Data
+
+```{r}
+
+plot_missing(auto_mpg_data)
+anyDuplicated(auto_mpg_data)
+
+```
+
+No missing or duplicated values.
+
+### Converting horsepower values to numerical and model_year, origin to factors
+
+```{r}
+
+auto_mpg_data$horsepower = as.numeric(levels(auto_mpg_data$horsepower))[auto_mpg_data$horsepower]
+auto_mpg_data$model_year = auto_mpg_data$model_year %>%
+                           factor(labels = sort(unique(auto_mpg_data$model_year)))
+auto_mpg_data$origin = auto_mpg_data$origin %>%
+                       factor(labels = sort(unique(auto_mpg_data$origin)))
+
+```
+
+### Counting total null values in each column
+
+```{r}
+
+colSums(is.na(auto_mpg_data))
+
+```
+
+6 NA values in 'horsepower'.
+
+### Replacing NA values with mean
+
+```{r}
+auto_mpg_data$horsepower[is.na(auto_mpg_data$horsepower)] = mean(auto_mpg_data$horsepower, na.rm = T)
+```
+
+Due to less outliers, mean has been choosen as the measure of central tendency to replace all the NA values in 'horsepower'.
+
+### Counting the occurance of each cylinder category
+
+```{r}
+auto_mpg_data %>% 
+  group_by(cylinders) %>% 
+  count(cylinders)
+```
+
+Occurances of cylinder 'Type' 3 and 5 is very low.
+
+### Eliminating cylinder type 3 and 5 due to very low frequencies
+
+```{r}
+auto_mpg_data <- auto_mpg_data %>% 
+                 filter(cylinders != 3 & cylinders != 5)
+```
+
+### Boxplots to identify outliers
+
+```{r}
+boxplot(auto_mpg_data$cylinders, plot=TRUE)$out
+```
+
+```{r}
+boxplot(auto_mpg_data$displacement, plot=TRUE)$out
+```
+
+```{r}
+boxplot(auto_mpg_data$horsepower, plot=TRUE)$out
+```
+
+```{r}
+boxplot(auto_mpg_data$weight, plot=TRUE)$out
+```
+
+```{r}
+boxplot(auto_mpg_data$acceleration, plot=TRUE)$out
+```
+
+'horsepower' and 'acceleration' have a dozen of outliers.
+
+### Eliminating outliers from horsepower and acceleration
+
+```{r}
+outliers <- boxplot(auto_mpg_data$horsepower, plot=FALSE)$out
+auto_mpg_data <- auto_mpg_data[-which(auto_mpg_data$horsepower %in% outliers),]
+```
+
+```{r}
+outliers <- boxplot(auto_mpg_data$acceleration, plot=FALSE)$out
+auto_mpg_data <- auto_mpg_data[-which(auto_mpg_data$acceleration %in% outliers),]
+```
+
+```{r}
+dim(auto_mpg_data)
+```
+
+## Plotting pearson correlation among numerical data
+
+```{r}
+auto_mpg_data_num <- auto_mpg_data[c(1:6)]
+corrplot(cor(auto_mpg_data_num))
+```
+
+'cylinder', 'displacement', 'horsepower' and 'weight' are highly inversly related to 'mpg' while 'acceleration' is positively related to 'mpg' but the correlation is quite low.
+
+## Acknowledging relations among numerical data via Simple Linear Regression Analyses
+
+Studying simple linear regression models to understand variables for multiple linear regression model.
+
+### Eliminating acceleration variable due to low correlation with mpg
+
+```{r}
+auto_mpg_data_reg <- auto_mpg_data[c(1:5)]
+```
+
+### 'mpg', 'cylinders'
+
+```{r}
+model_cy <- lm(auto_mpg_data_reg$mpg ~ auto_mpg_data_reg$cylinders)
+summary(model_cy)
+```
+
+1. The coefficients i.e. -3.6 describe the magnitude of independent variable (X-axis) which is the estimate of slope for 'cylinders'. Standard error and the p-value for the hypothesis that the slope equal 0. The standard error on the slope is low.
+
+2. The intercepts denote the dependent Y intercept values or the outcomes. The standard error on the intercept is high.  
+
+3. The residual standard error is the measure of the variation of observations around the regression line, the same as square root of the mean squared error. The residual std. error of 4.784 is the same as square root of the mean squared error. 
+
+4. The F-statistics for the hypothesis test and p-value that all the coefficients in the model are zero.
+
+5. The result is a negative, fairly inverse association between 'cylinders' and 'mpg'
+
+```{r}
+attributes(model_cy)
+model_cy$coefficients
+```
+
+To check into some attributes of the model.
+
+```{r}
+plot(auto_mpg_data_reg$cylinders, auto_mpg_data_reg$mpg, main = "Scatterplot on Mpg vs. Cylinders")
+abline(model_cy, col = 2, lwd = 3)
+```
+
+Adding the regression line to the model makes it clearer.
+
+```{r}
+confint(model_cy, level = 0.99)
+```
+
+The 99% confidence interval for the model coefficients. 
+
+### 'mpg', 'displacement'
+
+```{r}
+model_dis <- lm(auto_mpg_data_reg$mpg ~ auto_mpg_data_reg$displacement)
+summary(model_dis)
+```
+
+1. The standard error on slope is quite low.
+
+2. The standard error on intercept is moderate.
+
+3. The result is a negative, fairly inverse association between 'displacement' and 'mpg'
+
+```{r}
+attributes(model_dis)
+model_dis$coefficients
+```
+
+```{r}
+plot(auto_mpg_data_reg$displacement, auto_mpg_data_reg$mpg, main = "Scatterplot on Mpg vs. Displacement")
+abline(model_dis, col = 3, lwd = 3)
+```
+
+```{r}
+confint(model_dis, level = 0.99)
+```
+
+### 'mpg', 'horsepower'
+
+```{r}
+model_hor <- lm(auto_mpg_data_reg$mpg ~ auto_mpg_data_reg$horsepower)
+summary(model_hor)
+```
+
+1. The standard error on slope is quite low.
+
+2. The standard error on intercept is high.
+
+3. The result is a negative, fairly inverse association between 'horsepower' and 'mpg'
+
+```{r}
+attributes(model_hor)
+model_hor$coefficients
+```
+
+```{r}
+plot(auto_mpg_data_reg$horsepower, auto_mpg_data_reg$mpg, main = "Scatterplot on Mpg vs. Horsepower")
+abline(model_hor, col = 4, lwd = 3)
+```
+
+```{r}
+confint(model_hor, level = 0.99)
+```
+
+### 'mpg', 'weight'
+
+```{r}
+model_w <- lm(auto_mpg_data_reg$mpg ~ auto_mpg_data_reg$weight)
+summary(model_w)
+```
+
+1. The standard error on slope is quite low.
+
+2. The standard error on intercept is high.
+
+3. The result is a negative, fairly inverse association between 'weight' and 'mpg'
+
+
+```{r}
+attributes(model_w)
+model_w$coefficients
+```
+
+```{r}
+plot(auto_mpg_data_reg$weight, auto_mpg_data_reg$mpg, main = "Scatterplot on Mpg vs. Weight")
+abline(model_w, col = 6, lwd = 3)
+```
+
+```{r}
+confint(model_w, level = 0.99)
+```
+
+## Multiple Linear Regression
+
+### Splitting the dataset into 80/20 ratio
+
+```{r}
+set.seed(852456)
+indexes <- sample(nrow(auto_mpg_data), (0.8*nrow(auto_mpg_data)), replace = FALSE)
+auto_mpg_train <- auto_mpg_data[indexes, ]
+auto_mpg_test <- auto_mpg_data[-indexes, ]
+```
+
+### Model1: Multiple Linear Regression Analysis on numerical variables only
+
+Regression model fitting assumptions:
+
+1. The Y-values (or the errors, "e") are independent.
+
+2. The Y-values can be expressed as a linear function of the X variable.
+
+3. Variation of observations around the regression line (residual SE) is constant (homoscedasticity).
+
+4. For given value of X, Y values are normally distributed.
+
+```{r}
+model1 <- lm(mpg ~ cylinders + displacement + horsepower + weight, data = auto_mpg_train)
+summary(model1)
+```
+
+1. R-square value 0.72 denotes that approximately 72% of variation in 'mpg' can be explained by this model, i.e. can be explained by numerical variables only.
+
+2. The F-statistic and p-value for an overall test of significance of this model. This tests the null hypotesis that all the model coefficients equal 0. 
+
+3. The residual standard error gives an idea on how far observed the 'mpg' values are from the predicted or fitted 'mpg' values (y_cap). An idea of the typical sized residual or error.
+
+4. The intercept of 46.51 is the estimated mean Y value when all Xs equal 0. This would be the estimated mean 'mpg' for a record with all the numerical variables equals 0.
+
+5. The slopes for each variable are described. This is the effect of each numerical variable on 'mpg' when adjusted and controlled. For e.g. an increase of 1 unit of 'cylinders' results in 0.3976 times decrease in 'mpg' unit.
+
+6. The p-values for hypotheses tests that slope or intercept equal 0 are described. 
+
+```{r}
+par(mfrow = c(2,2))
+plot(model1)
+```
+
+1. Residual Plot: The X-axis is the predicted or fitted Y values (y_cap). On the Y-axis is the residuals or errors. If the linerity assumption is met, a straight red line is observed, fairly flat. Here, the red line is a bit curvy which suggests some non-linear relationship between 'mpg' with other numerical variables.
+
+2. QQ Plot: Quantile quantile plot presents Y-axis as the ordered, observed, standardized residuals. On the X-axis is the ordered theoretical residuals. This is expected for the residuals to be if the errors are truly normally distributed. If Y values or errors are normally distributed, the points should fall roughly on a diagonal line, which is fair in this case.
+
+3. Scale-Location and Residuals vs. Leverage plots helps to identify non-linearities, non constant variance as well as other troublesome observations. A bit of non-linearity can be observed within these diagnostic plots. Linearity has been approved by these diagnostic plots.
+
+### Model2: Multiple Linear Regression Analysis on all numerical variables except horsepower
+
+```{r}
+model2 <- lm(mpg ~ cylinders + displacement + weight, data = auto_mpg_train)
+summary(model2)
+```
+
+R-square value 0.71 denotes that approximately 71% of variation in 'mpg' can be explained by this model, i.e. can be explained by all the numerical variables excluding 'horsepower'.
+
+```{r}
+par(mfrow = c(2,2))
+plot(model2)
+```
+
+1. Residual Plot: Here, the red line is a bit curvy which suggests some non-linear relationship between 'mpg' with other numerical variables except 'horsepower'.
+
+2. QQ Plot: Y values or errors are normally distributed, the points should fall roughly on a diagonal line, which is fair in this case.
+
+3. Scale-Location and Residuals vs. Leverage plots maintains fairly the linearity within the model.
+
+### Model3: Multiple Linear Regression Analysis on all data
+
+```{r}
+model3 <- lm(mpg ~ cylinders + displacement + horsepower + weight + acceleration + model_year + origin, 
+             data = auto_mpg_train)
+summary(model3)
+```
+
+R-square value 0.87 denotes that approximately 87% of variation in 'mpg' can be explained by this model, i.e. can be explained by all the other variables rather than the target 'mpg'.
+
+```{r}
+par(mfrow = c(2,2))
+plot(model3)
+```
+
+1. Residual Plot: Here, the red line is a bit curvy which suggests some non-linear relationship between 'mpg' with all other variables.
+
+2. QQ Plot: Y values or errors are normally distributed, the points should fall roughly on a diagonal line, which is fair in this case.
+
+3. Scale-Location and Residuals vs. Leverage plots shows some hint of non-linearity in the model within these diagnostic plots.
+
+### Plotting all the variables and their characteristic nature within the model
+
+```{r}
+visreg(model3)
+```
+
+### Predicting by model3 on test data
+
+```{r}
+predictions <- predict(model3, newdata = auto_mpg_test)
+df <- cbind.data.frame(auto_mpg_test$mpg, predictions)
+head(df)
+```
+
+In the end, the test data is used to predict the model on. The closer resemblence in the actual and predicted values is clearly observable.
+
+```{r}
+sqrt(mean((predictions - auto_mpg_test$mpg)^2))
+```
+
+And finally, the root mean square error which is 3.24 and hence quite low as the average prediction error or deviation from actual values. 
+
+# PART 3: REFLECTION
+
+## 1.	On Classification Analyses
+
+   The final outcome from the decision trees analysis was 70% accurate approximately which is fairly good for a dataset with numerical variables only. The confusion matrix turns out fairly complicated to predict here as the outcome has 6 different classes and hence a 6x6 matrix to observe.
+   
+   The final outcome from the kNN analysis was 81% with complexity and 72% with simplicity which is decently good. However, we traded for the simpler model according to Occam’s Razor as the differences are not quite large.
+   
+   Henceforth, the ‘Glass Identification’ dataset is destined to be more suited for kNN models as compared to decision trees models due to total numerical nature of the dataset and lack of any categorical variable. Also, the dataset with more than 2 outcomes does not fit really well with decision tree model. On the other hand, kNN was specially designed to handle such dataset.
+   
+  After all, the 10x cross validation has its essence towards improvements in both the analyses. Also, there were only 214 instances in our dataset, which is fairly small, so it has been subjected to different experimental splits within training and testing data.
+  
+## 2. On Regression Analyses
+
+   Here, a simple linear regression analyses were essential in prior to understand the nature of the dataset when exposed to a regression model. The characteristics of each variable with the target variable was studied by simple ‘lm’ plots and their descriptive test results.
+   
+   The dataset has around 400 instances, which is moderately small and there are 3 categorical and 6 numerical variables in the dataset. The outcome ‘mpg’ has continuous values ranging from 9 to 47 and hence this dataset is suitable for a regression analyses rather than a classification or clustering one.
+   
+   In a regression analyses it can not be truly answered that which particular model is best because here a model that includes all the source variables has to be considered anyhow and it is highly probable that this particular model would yield the highest accuracy on prediction, because there arises a need to delve deeper into feature selection and extraction from the data. But anyhow, the final model presented proves out to be fairly efficient in conveying the message to the audience. The message is that now we do understand how the linear regression model works but that is not the end of our quest. There are more sub-questions to find and more research to answer those.
+
